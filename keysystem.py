@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, abort, session
+from flask import Flask, request, jsonify, render_template, abort
 from datetime import datetime, timedelta
 import uuid
 import json
@@ -10,31 +10,31 @@ from cryptography.fernet import Fernet
 app = Flask(__name__, template_folder="templates")
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "replace_with_a_strong_secret")
 
-# Storage files
-KEYS_FILE = "/workspace/keys.json"
-ACCESS_TOKENS_FILE = "/workspace/access_tokens.json"
+# Local writable storage directory
+STORAGE_DIR = "storage"
+os.makedirs(STORAGE_DIR, exist_ok=True)
 
-# Make sure storage folder exists
-os.makedirs("/workspace", exist_ok=True)
+KEYS_FILE = os.path.join(STORAGE_DIR, "keys.json")
+ACCESS_TOKENS_FILE = os.path.join(STORAGE_DIR, "access_tokens.json")
 
-# Crypto key (keep secret!)
+# Encryption
 ENCRYPTION_KEY = os.getenv(
     "ENCRYPTION_KEY",
     "hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM=",
 ).encode()
 cipher = Fernet(ENCRYPTION_KEY)
 
-# Short Jambo API token (your token)
+# Short Jambo API
 SHORT_JAMBO_API_TOKEN = os.getenv(
     "SHORT_JAMBO_API_TOKEN",
     "6e49817e3eab65f2f9b06f8c1319ba768a4ae9c4",
 )
 SHORT_JAMBO_ENDPOINT = "https://short-jambo.com/api"
 
-# Admin key (always valid, no expiry, unlimited use)
+# Admin key (permanent)
 ADMIN_KEY = os.getenv("ADMIN_KEY", "20102010")
 
-# Simple in-process lock to avoid race conditions on file writes
+# Lock for file writing
 _storage_lock = threading.Lock()
 
 
@@ -54,8 +54,6 @@ def _write_json_file(path: str, data: dict) -> None:
             json.dump(data, f)
 
 
-# Keys management
-
 def load_keys() -> dict:
     return _read_json_file(KEYS_FILE)
 
@@ -63,11 +61,6 @@ def load_keys() -> dict:
 def save_keys(keys: dict) -> None:
     _write_json_file(KEYS_FILE, keys)
 
-
-# One-time access tokens for /genkey gating
-# Structure: {
-#   token: { "expires": iso8601, "used": bool, "generated_key": optional[str] }
-# }
 
 def load_access_tokens() -> dict:
     return _read_json_file(ACCESS_TOKENS_FILE)
@@ -97,16 +90,8 @@ def index():
     })
 
 
-@app.route("/create_genkey_link", methods=["POST", "GET"])
+@app.route("/create_genkey_link", methods=["GET"])
 def create_genkey_link():
-    """
-    Creates a one-time access token and shortens a link to /genkey?access=<token>
-    using the Short Jambo API. Returns the short URL.
-
-    Optional query params:
-      - alias: custom alias for the short link
-      - ttl_minutes: integer minutes the access token is valid (default 10)
-    """
     alias = request.args.get("alias")
     ttl_minutes_raw = request.args.get("ttl_minutes")
     try:
@@ -114,7 +99,6 @@ def create_genkey_link():
     except ValueError:
         ttl_minutes = 10
 
-    # Create a one-time access token
     access_tokens = load_access_tokens()
     token = str(uuid.uuid4())
     expiration_dt = datetime.utcnow() + timedelta(minutes=ttl_minutes)
@@ -125,11 +109,9 @@ def create_genkey_link():
     }
     save_access_tokens(access_tokens)
 
-    # Build the long URL to our /genkey endpoint
     base = request.url_root.rstrip("/")
     long_url = f"{base}/genkey?access={token}"
 
-    # Call Short Jambo API to shorten
     params = {
         "api": SHORT_JAMBO_API_TOKEN,
         "url": long_url,
@@ -140,20 +122,17 @@ def create_genkey_link():
     try:
         resp = requests.get(SHORT_JAMBO_ENDPOINT, params=params, timeout=15)
         resp.raise_for_status()
-
-        # API returns JSON, parse accordingly
         short_url = None
         try:
             data = resp.json()
-            # The actual short URL is under "shortenedUrl" per your example
-            short_url = data.get("shortenedUrl")
+            short_url = data.get("shortenedUrl") or resp.text.strip()
         except Exception:
             short_url = resp.text.strip()
 
         if not short_url:
             return jsonify({
                 "success": False,
-                "reason": "Unable to parse short link from API response",
+                "reason": "Unable to parse short link",
                 "raw_response": resp.text,
             }), 502
 
@@ -174,11 +153,6 @@ def create_genkey_link():
 
 @app.route("/genkey")
 def generate_key():
-    """
-    Only accessible with a valid one-time access token via the shortened link.
-    Generates a new encrypted key once per token. Refresh will not generate
-    a new key again; subsequent loads will show an error.
-    """
     access = request.args.get("access")
     if not access:
         return render_template("error.html", message="Access token missing"), 403
@@ -189,19 +163,15 @@ def generate_key():
     if not token_info:
         return render_template("error.html", message="Invalid access token"), 403
 
-    # Check expiry
     try:
         if datetime.fromisoformat(token_info["expires"]) < datetime.utcnow():
             return render_template("error.html", message="Access token expired"), 403
     except Exception:
-        # Malformed date, reject
         return render_template("error.html", message="Access token invalid expiry"), 403
 
-    # If already used, show error page - no regeneration allowed
     if token_info.get("used"):
         return render_template("error.html", message="This link was already used"), 403
 
-    # Generate and store the new key
     keys = load_keys()
     new_key = generate_unique_key(keys)
     expiration = (datetime.utcnow() + timedelta(hours=24)).isoformat()
@@ -209,7 +179,6 @@ def generate_key():
     keys[new_key] = {"expires": expiration, "used": False}
     save_keys(keys)
 
-    # Mark token as used and bind the generated key to it
     token_info["used"] = True
     token_info["generated_key"] = new_key
     access_tokens[access] = token_info
@@ -225,18 +194,15 @@ def verify_key():
     if not provided_key:
         return jsonify({"valid": False, "reason": "No key provided"}), 400
 
-    # Allow plaintext admin key directly
     if provided_key == ADMIN_KEY:
         return jsonify({"valid": True, "admin": True})
 
-    # Try to decrypt; if decryption fails, still allow admin key check only
     decrypted_key = None
     try:
         decrypted_key = cipher.decrypt(provided_key.encode()).decode()
     except Exception:
         pass
 
-    # If the decrypted value is the admin key, allow it as well
     if decrypted_key == ADMIN_KEY:
         return jsonify({"valid": True, "admin": True})
 
@@ -263,7 +229,6 @@ def verify_key():
 
 @app.route("/adminkey")
 def get_admin_key():
-    """Returns the encrypted admin key so it can be verified via /verify."""
     encrypted_admin_key = cipher.encrypt(ADMIN_KEY.encode()).decode()
     return jsonify({
         "encrypted_admin_key": encrypted_admin_key,
@@ -271,7 +236,6 @@ def get_admin_key():
     })
 
 
-# Minimal error page template rendering support
 @app.errorhandler(403)
 def forbidden(e):
     return render_template("error.html", message="Forbidden"), 403
