@@ -1,108 +1,137 @@
-from flask import Flask, request, jsonify, render_template, session
+from flask import Flask, request, session, render_template, jsonify
 from datetime import datetime, timedelta
 import uuid
 import json
 import os
-import threading
 from cryptography.fernet import Fernet
+import requests
 
 app = Flask(__name__, template_folder="templates")
-# Use a secure secret key for sessions
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "replace_with_a_strong_secret")
+app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(16))
 
-# Local writable storage directory
-STORAGE_DIR = "storage"
-os.makedirs(STORAGE_DIR, exist_ok=True)
+# === Config ===
+KEYS_FILE = "keys.json"
+if not os.path.exists(KEYS_FILE):
+    with open(KEYS_FILE, "w") as f:
+        json.dump({}, f)
 
-KEYS_FILE = os.path.join(STORAGE_DIR, "keys.json")
-
-# Encryption key must match exactly with client app
-ENCRYPTION_KEY = os.getenv(
-    "ENCRYPTION_KEY",
-    "hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
-).encode()
+ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
 cipher = Fernet(ENCRYPTION_KEY)
 
-# Shared global token for short link access
 GLOBAL_TOKEN = os.getenv("GLOBAL_TOKEN", "supersecrettoken123")
 
-_storage_lock = threading.Lock()
+# Short Jambo API
+SHORT_JAMBO_API_TOKEN = os.getenv(
+    "SHORT_JAMBO_API_TOKEN",
+    "6e49817e3eab65f2f9b06f8c1319ba768a4ae9c4"
+)
+SHORT_JAMBO_ENDPOINT = "https://short-jambo.com/api"
 
-def _read_json_file(path: str) -> dict:
-    if not os.path.exists(path):
-        return {}
+# === Helpers ===
+def load_keys():
+    with open(KEYS_FILE, "r") as f:
+        return json.load(f)
+
+def save_keys(data):
+    with open(KEYS_FILE, "w") as f:
+        json.dump(data, f)
+
+# === Routes ===
+
+@app.route("/")
+def index():
+    return jsonify({
+        "status": "ok",
+        "routes": [
+            "/create_genkey_link",
+            "/genkey?access=<GLOBAL_TOKEN>",
+            "/verify?key=<ENCRYPTED_KEY>"
+        ]
+    })
+
+
+@app.route("/create_genkey_link")
+def create_genkey_link():
+    alias = request.args.get("alias")
+    base_url = request.url_root.rstrip("/")
+    long_url = f"{base_url}/genkey?access={GLOBAL_TOKEN}"
+
+    params = {
+        "api": SHORT_JAMBO_API_TOKEN,
+        "url": long_url
+    }
+    if alias:
+        params["alias"] = alias
+
     try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except:
-        return {}
+        response = requests.get(SHORT_JAMBO_ENDPOINT, params=params, timeout=10)
+        response.raise_for_status()
 
-def _write_json_file(path: str, data: dict):
-    with _storage_lock:
-        with open(path, "w") as f:
-            json.dump(data, f)
+        try:
+            data = response.json()
+            short_url = data.get("shortenedUrl") or response.text.strip()
+        except Exception:
+            short_url = response.text.strip()
 
-def load_keys() -> dict:
-    return _read_json_file(KEYS_FILE)
+        return {
+            "success": True,
+            "short_url": short_url,
+            "long_url": long_url
+        }
 
-def save_keys(keys: dict):
-    _write_json_file(KEYS_FILE, keys)
+    except requests.RequestException as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }, 502
+
 
 @app.route("/genkey")
 def genkey():
-    access = request.args.get("access", "")
-    if access != GLOBAL_TOKEN:
+    if request.args.get("access") != GLOBAL_TOKEN:
         return render_template("error.html", message="Invalid access token"), 403
 
     if session.get("got_key"):
-        return render_template("error.html", message="You already received a key"), 403
+        return render_template("error.html", message="Key already issued"), 403
 
     keys = load_keys()
     new_key = str(uuid.uuid4())
-    expiration = (datetime.utcnow() + timedelta(hours=24)).isoformat()
-    keys[new_key] = {"expires": expiration, "used": False}
+    expires = (datetime.utcnow() + timedelta(hours=24)).isoformat()
+    keys[new_key] = {"expires": expires, "used": False}
     save_keys(keys)
 
     encrypted_key = cipher.encrypt(new_key.encode()).decode()
-    # Mark session so user can't refresh to get a new key
     session["got_key"] = True
-    return render_template("keygen.html", key=encrypted_key, expires=expiration)
+
+    return render_template("keygen.html", key=encrypted_key, expires=expires)
+
 
 @app.route("/verify")
-def verify_key():
-    provided_key = request.args.get("key")
-    if not provided_key:
-        return jsonify({"valid": False, "reason": "No key provided"}), 400
-
-    decrypted = None
+def verify():
+    provided = request.args.get("key", "")
     try:
-        decrypted = cipher.decrypt(provided_key.encode()).decode()
+        decrypted = cipher.decrypt(provided.encode()).decode()
     except Exception:
-        return jsonify({"valid": False, "reason": "Invalid encrypted key"}), 400
+        return {"valid": False, "reason": "Invalid key"}, 400
 
     keys = load_keys()
-    if decrypted not in keys:
-        return jsonify({"valid": False, "reason": "Key not found"}), 404
-
-    info = keys[decrypted]
-    if info.get("used"):
-        return jsonify({"valid": False, "reason": "Key already used"}), 403
-
+    info = keys.get(decrypted)
+    if not info:
+        return {"valid": False, "reason": "Key not found"}, 404
+    if info["used"]:
+        return {"valid": False, "reason": "Already used"}, 403
     if datetime.fromisoformat(info["expires"]) < datetime.utcnow():
-        return jsonify({"valid": False, "reason": "Key expired"}), 403
+        return {"valid": False, "reason": "Expired"}, 403
 
     info["used"] = True
     save_keys(keys)
-    return jsonify({"valid": True, "admin": False})
+    return {"valid": True}
 
-@app.route("/adminkey")
-def adminkey():
-    encrypted = cipher.encrypt(GLOBAL_TOKEN.encode()).decode()
-    return jsonify({"encrypted_admin_key": encrypted})
 
 @app.errorhandler(403)
 def forbidden(e):
     return render_template("error.html", message="Forbidden"), 403
 
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
