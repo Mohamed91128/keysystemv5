@@ -4,7 +4,6 @@ import uuid
 import json
 import os
 from cryptography.fernet import Fernet
-from urllib.parse import unquote
 
 app = Flask(__name__)
 
@@ -50,10 +49,10 @@ def generate_key():
     new_key = generate_unique_key(keys)
     expiration = (datetime.utcnow() + timedelta(hours=24)).isoformat()
 
-    # Store key info with user IP, creation date, and initial used_ips list
+    # Store key info with user IP and creation date
     keys[new_key] = {
         "expires": expiration,
-        "used_ips": [user_ip],  # Initialize with the creator's IP
+        "used": False,
         "user_ip": user_ip,
         "created_date": today_str
     }
@@ -68,13 +67,6 @@ def generate_key():
 @app.route("/verify")
 def verify_key():
     encrypted_key = request.args.get("key")
-
-    if encrypted_key:
-        # Safely decode URL-encoded key (fixes 'No key provided' issues)
-        encrypted_key = unquote(encrypted_key)
-
-    print("DEBUG: Received key param:", encrypted_key)  # Optional debug line
-
     if not encrypted_key:
         return jsonify({"valid": False, "reason": "No key provided"}), 400
 
@@ -89,24 +81,15 @@ def verify_key():
     if not key_info:
         return jsonify({"valid": False, "reason": "Key not found"}), 404
 
-    # Check expiration
+    if key_info.get("used"):
+        return jsonify({"valid": False, "reason": "Key has already been used"}), 403
+
     if datetime.fromisoformat(key_info["expires"]) < datetime.utcnow():
         return jsonify({"valid": False, "reason": "Key expired"}), 403
 
-    user_ip = request.remote_addr
-
-    # Check if IP has already used the key or if this is the first use
-    used_ips = key_info.get("used_ips", [])
-
-    if used_ips and user_ip not in used_ips:
-        return jsonify({"valid": False, "reason": "Key already used from a different IP"}), 403
-
-    # Add current IP if not already in the list (rare case)
-    if user_ip not in used_ips:
-        used_ips.append(user_ip)
-        key_info["used_ips"] = used_ips
-        keys[key] = key_info
-        save_keys(keys)
+    # Mark key as used
+    keys[key]["used"] = True
+    save_keys(keys)
 
     return jsonify({"valid": True})
 
