@@ -1,9 +1,9 @@
-from flask import Flask, request, session, render_template, jsonify
+from flask import Flask, request, session, jsonify
 from datetime import datetime, timedelta
 import uuid, json, os
 from cryptography.fernet import Fernet
 
-app = Flask(__name__, template_folder="templates")
+app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(16))
 
 KEYS_FILE = "keys.json"
@@ -11,7 +11,6 @@ if not os.path.exists(KEYS_FILE):
     with open(KEYS_FILE, "w") as f:
         json.dump({}, f)
 
-# Use a fixed Fernet key; keep it safe and consistent
 ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
 cipher = Fernet(ENCRYPTION_KEY)
 
@@ -28,17 +27,17 @@ def save_keys(data):
 @app.route("/genkey")
 def genkey():
     if request.args.get("access") != GLOBAL_TOKEN:
-        return render_template("error.html", message="Invalid access token"), 403
+        return jsonify({"reason": "Invalid access token", "valid": False}), 403
 
     issued_keys = session.get("issued_keys", [])
     now = datetime.utcnow()
 
-    # Clean keys issued in last 24 hours
+    # Remove keys older than 24 hours
     issued_keys = [datetime.fromisoformat(ts) for ts in issued_keys]
     issued_keys = [ts for ts in issued_keys if now - ts < timedelta(hours=24)]
 
     if len(issued_keys) >= 4:
-        return render_template("error.html", message="Daily key limit reached (4 keys max)"), 403
+        return jsonify({"reason": "Daily key limit reached (4 keys max)", "valid": False}), 403
 
     keys = load_keys()
     new_key = str(uuid.uuid4())
@@ -51,40 +50,39 @@ def genkey():
     issued_keys.append(now)
     session["issued_keys"] = [ts.isoformat() for ts in issued_keys]
 
-    return render_template("keygen.html", key=encrypted_key, expires=expires)
+    return jsonify({"key": encrypted_key, "expires": expires, "valid": True})
 
 @app.route("/verify")
-def verify_key():
-    encrypted_key = request.args.get("token")  # expects ?token=...
-
-    if not encrypted_key:
-        return jsonify({"valid": False, "reason": "No key provided"}), 400
+def verify():
+    token = request.args.get("token")
+    if not token:
+        return jsonify({"reason": "No key provided", "valid": False}), 400
 
     try:
-        decrypted_key = cipher.decrypt(encrypted_key.encode()).decode()
+        decrypted_key = cipher.decrypt(token.encode()).decode()
     except Exception:
-        return jsonify({"valid": False, "reason": "Invalid token or decryption failed"}), 400
+        return jsonify({"reason": "Invalid token or decryption failed", "valid": False}), 400
 
     keys = load_keys()
     key_info = keys.get(decrypted_key)
     if not key_info:
-        return jsonify({"valid": False, "reason": "Token not found"}), 404
+        return jsonify({"reason": "Token not found", "valid": False}), 404
 
     now = datetime.utcnow()
     expires = datetime.fromisoformat(key_info["expires"])
 
     if now > expires:
-        return jsonify({"valid": False, "reason": "Token expired"}), 403
+        return jsonify({"reason": "Token expired", "valid": False}), 403
 
     if key_info.get("used"):
-        return jsonify({"valid": False, "reason": "Token already used"}), 403
+        return jsonify({"reason": "Token already used", "valid": False}), 403
 
-    # Mark key as used
+    # Mark as used
     key_info["used"] = True
     save_keys(keys)
 
-    return jsonify({"valid": True, "reason": "Token verified successfully"})
+    return jsonify({"reason": "Token verified successfully", "valid": True})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port)
