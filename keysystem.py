@@ -6,128 +6,76 @@ import os
 from cryptography.fernet import Fernet
 
 app = Flask(__name__)
-app.secret_key = "a_very_secret_key_change_this"
+app.secret_key = "replace_with_a_long_random_secret_key"
 
 KEYS_FILE = "keys.json"
 USAGE_FILE = "usage.json"
 ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
 cipher = Fernet(ENCRYPTION_KEY)
 
-# ---------------- Helper Functions ---------------- #
+def load_json(filename):
+    return json.load(open(filename)) if os.path.exists(filename) else {}
 
-def load_keys():
-    if not os.path.exists(KEYS_FILE):
-        return {}
-    with open(KEYS_FILE, 'r') as f:
-        return json.load(f)
-
-def save_keys(keys):
-    with open(KEYS_FILE, 'w') as f:
-        json.dump(keys, f)
-
-def load_usage():
-    if not os.path.exists(USAGE_FILE):
-        return {}
-    with open(USAGE_FILE, 'r') as f:
-        return json.load(f)
-
-def save_usage(usage):
-    with open(USAGE_FILE, 'w') as f:
-        json.dump(usage, f)
-
-def generate_unique_key(existing_keys):
-    while True:
-        new_key = str(uuid.uuid4())
-        if new_key not in existing_keys:
-            return new_key
-
-def cleanup_usage(usage):
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    keys_to_delete = [uid for uid, data in usage.items() if data.get("date") != today_str]
-    for uid in keys_to_delete:
-        del usage[uid]
+def save_json(data, filename):
+    json.dump(data, open(filename, "w"))
 
 def get_user_id():
     if "user_id" not in session:
         session["user_id"] = str(uuid.uuid4())
     return session["user_id"]
 
-# ---------------- Routes ---------------- #
+def cleanup_usage(usage):
+    today = datetime.now().strftime("%Y-%m-%d")
+    for uid in list(usage.keys()):
+        if usage[uid].get("date") != today:
+            del usage[uid]
 
 @app.route("/genkey")
 def generate_key():
-    user_id = get_user_id()
-    today_str = datetime.now().strftime("%Y-%m-%d")
-
-    usage = load_usage()
+    uid = get_user_id()
+    usage = load_json(USAGE_FILE)
     cleanup_usage(usage)
 
-    user_data = usage.get(user_id)
-    if user_data and user_data.get("date") == today_str and user_data.get("count", 0) >= 3:
+    user_data = usage.get(uid, {})
+    if user_data.get("date") == datetime.now().strftime("%Y-%m-%d") and user_data.get("count", 0) >= 3:
         return render_template("error.html", message="You have reached the maximum of 3 keys per day."), 403
 
-    keys = load_keys()
-    new_key = generate_unique_key(keys)
+    raw_uuid = str(uuid.uuid4())
+    encrypted = cipher.encrypt(raw_uuid.encode()).decode()
     expiration = (datetime.now() + timedelta(hours=24)).isoformat()
 
-    keys[new_key] = {"expires": expiration, "used": False}
-    save_keys(keys)
+    keys = load_json(KEYS_FILE)
+    keys[encrypted] = {"expires": expiration, "used": False}
+    save_json(keys, KEYS_FILE)
 
-    print(f"[GENKEY] Generated raw key: {new_key}")
+    usage[uid] = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "count": user_data.get("count", 0) + 1
+    }
+    save_json(usage, USAGE_FILE)
 
-    if user_data and user_data.get("date") == today_str:
-        usage[user_id]["count"] += 1
-    else:
-        usage[user_id] = {"date": today_str, "count": 1}
-    save_usage(usage)
-
-    encrypted_key = cipher.encrypt(new_key.encode()).decode()
-    print(f"[GENKEY] Encrypted key: {encrypted_key}")
-
-    return render_template("keygen.html", key=encrypted_key, expires=expiration)
+    return render_template("keygen.html", key=encrypted, expires=expiration)
 
 @app.route("/verify")
 def verify_key():
-    encrypted_key = request.args.get("key")
+    encrypted_key = request.args.get("key", "").replace(" ", "+")
     if not encrypted_key:
-        return jsonify({"valid": False, "reason": "No key provided"}), 400
+        return jsonify(valid=False, reason="No key provided"), 400
 
-    try:
-        encrypted_key = encrypted_key.replace(" ", "+")
-        key = cipher.decrypt(encrypted_key.encode()).decode()
-        print(f"[VERIFY] Decrypted key: {key}")
-    except Exception as e:
-        print(f"[VERIFY] Failed to decrypt key: {e}")
-        return jsonify({"valid": False, "reason": "Invalid encrypted key"}), 400
-
-    keys = load_keys()
-    print(f"[VERIFY] Existing keys: {list(keys.keys())}")
-
-    key_info = keys.get(key)
-
+    keys = load_json(KEYS_FILE)
+    key_info = keys.get(encrypted_key)
     if not key_info:
-        print(f"[VERIFY] Key '{key}' not found in saved keys.")
-        return jsonify({"valid": False, "reason": "Key not found"}), 404
+        return jsonify(valid=False, reason="Key not found"), 404
 
-    if key_info.get("used"):
-        return jsonify({"valid": False, "reason": "Key has already been used"}), 403
+    if key_info["used"]:
+        return jsonify(valid=False, reason="Key has already been used"), 403
 
     if datetime.fromisoformat(key_info["expires"]) < datetime.now():
-        return jsonify({"valid": False, "reason": "Key expired"}), 403
+        return jsonify(valid=False, reason="Key expired"), 403
 
-    keys[key]["used"] = True
-    save_keys(keys)
-
-    return jsonify({"valid": True})
-
-# ---------------- Debugging Route (REMOVE IN PROD) ---------------- #
-
-@app.route("/debug/keys")
-def debug_keys():
-    keys = load_keys()
-    return jsonify(keys)
-
-# ---------------- Run Server ---------------- #
+    keys[encrypted_key]["used"] = True
+    save_json(keys, KEYS_FILE)
+    return jsonify(valid=True)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
