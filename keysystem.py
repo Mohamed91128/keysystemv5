@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_from_directory
 from datetime import datetime, timedelta
 import uuid
 import json
@@ -7,13 +7,11 @@ from cryptography.fernet import Fernet
 
 app = Flask(__name__)
 
-# File to store keys
 KEYS_FILE = "keys.json"
-
-# Use your existing Fernet key or generate a new one securely
 ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
 cipher = Fernet(ENCRYPTION_KEY)
 
+MAX_KEYS_PER_DAY = 4
 
 def load_keys():
     if not os.path.exists(KEYS_FILE):
@@ -21,11 +19,9 @@ def load_keys():
     with open(KEYS_FILE, "r") as f:
         return json.load(f)
 
-
 def save_keys(keys):
     with open(KEYS_FILE, "w") as f:
         json.dump(keys, f, indent=2)
-
 
 def generate_unique_key(existing_keys):
     while True:
@@ -33,33 +29,43 @@ def generate_unique_key(existing_keys):
         if new_key not in existing_keys:
             return new_key
 
+def user_key_count_today(keys, user_ip):
+    """Count how many keys generated today by user_ip"""
+    today_str = datetime.utcnow().date().isoformat()
+    count = 0
+    for key, info in keys.items():
+        if info.get("user_ip") == user_ip and info.get("created_date") == today_str:
+            count += 1
+    return count
 
 @app.route("/genkey")
 def generate_key():
     keys = load_keys()
+    user_ip = request.remote_addr
 
-    # Optional: Clean up expired keys (older than 24h) here if you want
+    if user_key_count_today(keys, user_ip) >= MAX_KEYS_PER_DAY:
+        # Render error page if limit exceeded
+        return render_template("error.html", message=f"Limit reached: Max {MAX_KEYS_PER_DAY} keys per day."), 429
 
     new_key = generate_unique_key(keys)
     expiration = (datetime.utcnow() + timedelta(hours=24)).isoformat()
+    created_date = datetime.utcnow().date().isoformat()
 
-    keys[new_key] = {"expires": expiration, "used": False}
+    # Save the key with user_ip and creation date
+    keys[new_key] = {
+        "expires": expiration,
+        "used": False,
+        "user_ip": user_ip,
+        "created_date": created_date
+    }
     save_keys(keys)
 
     encrypted_key = cipher.encrypt(new_key.encode()).decode()
 
-    # Return encrypted key and expiration in JSON
-    # Or you can render a nice HTML page if you want
-    return jsonify({
-        "key": encrypted_key,
-        "expires": expiration,
-        "valid": True
-    })
-
+    return render_template("keygen.html", key=encrypted_key, expires=expiration)
 
 @app.route("/verify")
 def verify_key():
-    # Accept either 'key' or 'token' param (your client decides)
     encrypted_key = request.args.get("key") or request.args.get("token")
     if not encrypted_key:
         return jsonify({"valid": False, "reason": "No key provided"}), 400
@@ -87,7 +93,11 @@ def verify_key():
 
     return jsonify({"valid": True, "reason": "Token verified successfully"})
 
+# Serve static files (space.js)
+@app.route("/static/<path:filename>")
+def static_files(filename):
+    return send_from_directory("static", filename)
 
 if __name__ == "__main__":
-    # Run on 0.0.0.0 to be accessible externally (change port if needed)
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    # debug=False in production
+    app.run(host="0.0.0.0", port=8080, debug=True)
