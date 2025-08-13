@@ -8,7 +8,7 @@ from cryptography.fernet import Fernet
 app = Flask(__name__)
 
 KEYS_FILE = "keys.json"
-ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="  # 32-byte key
+ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
 cipher = Fernet(ENCRYPTION_KEY)
 
 MAX_KEYS_PER_DAY = 4
@@ -61,9 +61,9 @@ def generate_key():
     encrypted_key = cipher.encrypt(new_key.encode()).decode()
     return render_template("keygen.html", key=encrypted_key, expires=expiration)
 
-@app.route("/verify")
+@app.route("/verify", methods=["GET", "POST"])
 def verify_key():
-    encrypted_key = request.args.get("key")
+    encrypted_key = request.args.get("key") or request.form.get("key")
     if not encrypted_key:
         return jsonify({"valid": False, "reason": "No key provided"}), 400
 
