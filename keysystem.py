@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, session
 from datetime import datetime, timedelta
 import uuid
 import json
@@ -6,11 +6,14 @@ import os
 from cryptography.fernet import Fernet
 
 app = Flask(__name__)
+app.secret_key = "a_very_secret_key"  # Needed for session handling
 
 KEYS_FILE = "keys.json"
 USAGE_FILE = "usage.json"
-ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
+ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="  # Replace with your secure key
 cipher = Fernet(ENCRYPTION_KEY)
+
+# ---------------- Helper Functions ---------------- #
 
 def load_keys():
     if not os.path.exists(KEYS_FILE):
@@ -41,21 +44,28 @@ def generate_unique_key(existing_keys):
 def cleanup_usage(usage):
     today_str = datetime.now().strftime("%Y-%m-%d")
     keys_to_delete = []
-    for user_ip, data in usage.items():
+    for user_id, data in usage.items():
         if data.get("date") != today_str:
-            keys_to_delete.append(user_ip)
+            keys_to_delete.append(user_id)
     for key in keys_to_delete:
         del usage[key]
 
+def get_user_id():
+    if "user_id" not in session:
+        session["user_id"] = str(uuid.uuid4())
+    return session["user_id"]
+
+# ---------------- Routes ---------------- #
+
 @app.route("/genkey")
 def generate_key():
-    user_ip = request.remote_addr
+    user_id = get_user_id()
     today_str = datetime.now().strftime("%Y-%m-%d")
 
     usage = load_usage()
     cleanup_usage(usage)
 
-    user_data = usage.get(user_ip)
+    user_data = usage.get(user_id)
     if user_data and user_data.get("date") == today_str and user_data.get("count", 0) >= 3:
         return render_template("error.html", message="You have reached the maximum of 3 keys per day."), 403
 
@@ -67,9 +77,9 @@ def generate_key():
     save_keys(keys)
 
     if user_data and user_data.get("date") == today_str:
-        usage[user_ip]["count"] += 1
+        usage[user_id]["count"] += 1
     else:
-        usage[user_ip] = {"date": today_str, "count": 1}
+        usage[user_id] = {"date": today_str, "count": 1}
     save_usage(usage)
 
     encrypted_key = cipher.encrypt(new_key.encode()).decode()
@@ -102,6 +112,8 @@ def verify_key():
     save_keys(keys)
 
     return jsonify({"valid": True})
+
+# ---------------- Run Server ---------------- #
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
