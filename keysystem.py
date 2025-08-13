@@ -63,7 +63,22 @@ def generate_key():
 
 @app.route("/verify", methods=["GET", "POST"])
 def verify_key():
-    encrypted_key = request.args.get("key") or request.form.get("key")
+    print("Request method:", request.method)
+    print("Request args:", request.args)
+    print("Request form:", request.form)
+    print("Request json:", request.get_json(silent=True))
+
+    encrypted_key = None
+
+    if request.method == "POST":
+        encrypted_key = request.form.get("key")
+        if not encrypted_key:
+            json_data = request.get_json(silent=True)
+            if json_data:
+                encrypted_key = json_data.get("key")
+    else:
+        encrypted_key = request.args.get("key")
+
     if not encrypted_key:
         return jsonify({"valid": False, "reason": "No key provided"}), 400
 
