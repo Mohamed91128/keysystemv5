@@ -6,11 +6,14 @@ import os
 from cryptography.fernet import Fernet
 
 app = Flask(__name__)
-app.secret_key = "a_very_secret_key"  # Needed for session handling
+app.secret_key = "a_very_secret_key_change_this"  # Needed for Flask sessions
 
+# Files
 KEYS_FILE = "keys.json"
 USAGE_FILE = "usage.json"
-ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="  # Replace with your secure key
+
+# Encryption Key
+ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
 cipher = Fernet(ENCRYPTION_KEY)
 
 # ---------------- Helper Functions ---------------- #
@@ -43,12 +46,9 @@ def generate_unique_key(existing_keys):
 
 def cleanup_usage(usage):
     today_str = datetime.now().strftime("%Y-%m-%d")
-    keys_to_delete = []
-    for user_id, data in usage.items():
-        if data.get("date") != today_str:
-            keys_to_delete.append(user_id)
-    for key in keys_to_delete:
-        del usage[key]
+    keys_to_delete = [uid for uid, data in usage.items() if data.get("date") != today_str]
+    for uid in keys_to_delete:
+        del usage[uid]
 
 def get_user_id():
     if "user_id" not in session:
@@ -92,9 +92,10 @@ def verify_key():
         return jsonify({"valid": False, "reason": "No key provided"}), 400
 
     try:
+        encrypted_key = encrypted_key.replace(" ", "+")
         key = cipher.decrypt(encrypted_key.encode()).decode()
-    except Exception:
-        return jsonify({"valid": False, "reason": "Invalid encrypted key"}), 400
+    except Exception as e:
+        return jsonify({"valid": False, "reason": f"Invalid encrypted key: {str(e)}"}), 400
 
     keys = load_keys()
     key_info = keys.get(key)
