@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
   <title>Generated Key</title>
   <style>
     body, html {
@@ -41,22 +41,6 @@
       word-wrap: break-word;
       color: #00ffff;
       font-size: 1.2em;
-      margin-bottom: 20px;
-    }
-
-    button {
-      padding: 10px 30px;
-      font-size: 1.1em;
-      cursor: pointer;
-      border-radius: 5px;
-      border: none;
-      background-color: cyan;
-      color: black;
-      transition: background-color 0.3s ease;
-    }
-
-    button:hover {
-      background-color: #00bcd4;
     }
 
     canvas {
@@ -71,37 +55,9 @@
   <canvas id="spaceCanvas"></canvas>
   <div id="overlay">
     <h1>Your One-Time Access Key</h1>
-    <div class="key-box" id="key-box">{{ key }}</div>
+    <div class="key-box">{{ key }}</div>
     <p>Expires: {{ expires }}</p>
-    <button id="verifyBtn">Verify Key</button>
   </div>
-
   <script src="{{ url_for('static', filename='space.js') }}"></script>
-
-  <script>
-    document.getElementById("verifyBtn").addEventListener("click", async () => {
-      const key = document.getElementById("key-box").innerText.trim();
-
-      try {
-        const response = await fetch("/verify", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({ key })
-        });
-
-        const data = await response.json();
-
-        if (data.valid) {
-          alert("✅ Key is valid and marked as used.");
-        } else {
-          alert("❌ Invalid key: " + data.reason);
-        }
-      } catch (err) {
-        alert("Error verifying key: " + err.message);
-      }
-    });
-  </script>
 </body>
 </html>
