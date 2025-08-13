@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template_string
 from datetime import datetime, timedelta
 import uuid
 import json
@@ -13,7 +13,6 @@ cipher = Fernet(ENCRYPTION_KEY)
 
 def load_keys():
     if not os.path.exists(KEYS_FILE):
-        # Structure with two top-level keys: keys and user_keys
         return {"keys": {}, "user_keys": {}}
     with open(KEYS_FILE, 'r') as f:
         return json.load(f)
@@ -28,6 +27,67 @@ def generate_unique_key(existing_keys):
         if new_key not in existing_keys:
             return new_key
 
+KEYGEN_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Your One-Time Access Key</title>
+  <style>
+    body { background: #000; color: #eee; font-family: monospace, monospace; text-align: center; padding: 2rem; }
+    #key-box { 
+      background: #011; 
+      border: 1px solid #0cc; 
+      padding: 1rem; 
+      margin: 1rem auto; 
+      max-width: 90vw; 
+      overflow-wrap: break-word;
+      font-size: 1.2rem;
+      color: #0cc;
+    }
+    button {
+      background: #0cc; 
+      border: none; 
+      color: #000; 
+      padding: 0.8rem 1.5rem; 
+      font-size: 1.1rem; 
+      cursor: pointer; 
+      border-radius: 5px;
+      margin-top: 1rem;
+    }
+    button:hover {
+      background: #09a;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <h1>Your One-Time Access Key</h1>
+  <div id="key-box">{{ key }}</div>
+  <p>Expires: {{ expires }}</p>
+  <button onclick="verifyKey()">Verify Key</button>
+
+  <script>
+    function verifyKey() {
+      const encryptedKey = document.getElementById('key-box').textContent.trim();
+      fetch(`/verify?key=${encodeURIComponent(encryptedKey)}`)
+        .then(response => response.json())
+        .then(data => {
+          if (data.valid) {
+            alert("✅ Key is valid!");
+          } else {
+            alert("❌ Error verifying key: " + (data.reason || "Unknown error"));
+          }
+        })
+        .catch(err => {
+          alert("⚠️ Network or server error: " + err.message);
+        });
+    }
+  </script>
+</body>
+</html>
+"""
+
 @app.route("/genkey")
 def generate_key():
     user_ip = request.remote_addr
@@ -37,7 +97,6 @@ def generate_key():
     keys = data.get("keys", {})
     user_keys = data.get("user_keys", {})
 
-    # How many keys has this user created today?
     user_day_count = user_keys.get(user_ip, {}).get(today, 0)
 
     if user_day_count >= 3:
@@ -54,16 +113,14 @@ def generate_key():
         "owner": user_ip
     }
 
-    # Update count for this user
     if user_ip not in user_keys:
         user_keys[user_ip] = {}
     user_keys[user_ip][today] = user_day_count + 1
 
-    # Save everything back
     save_keys({"keys": keys, "user_keys": user_keys})
 
     encrypted_key = cipher.encrypt(new_key.encode()).decode()
-    return render_template("keygen.html", key=encrypted_key, expires=expiration)
+    return render_template_string(KEYGEN_HTML, key=encrypted_key, expires=expiration)
 
 @app.route("/verify")
 def verify_key():
