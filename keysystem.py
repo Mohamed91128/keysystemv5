@@ -11,17 +11,16 @@ KEYS_FILE = "keys.json"
 ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
 cipher = Fernet(ENCRYPTION_KEY)
 
-MAX_KEYS_PER_DAY = 4
-
 def load_keys():
     if not os.path.exists(KEYS_FILE):
-        return {}
+        # Structure with two top-level keys: keys and user_keys
+        return {"keys": {}, "user_keys": {}}
     with open(KEYS_FILE, 'r') as f:
         return json.load(f)
 
-def save_keys(keys):
+def save_keys(data):
     with open(KEYS_FILE, 'w') as f:
-        json.dump(keys, f)
+        json.dump(data, f)
 
 def generate_unique_key(existing_keys):
     while True:
@@ -29,56 +28,46 @@ def generate_unique_key(existing_keys):
         if new_key not in existing_keys:
             return new_key
 
-@app.route("/")
-def index():
-    return render_template("index.html")
-
 @app.route("/genkey")
 def generate_key():
-    keys = load_keys()
     user_ip = request.remote_addr
-    today_str = datetime.utcnow().date().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
 
-    count = sum(
-        1 for info in keys.values()
-        if info.get("user_ip") == user_ip and info.get("created_date") == today_str
-    )
+    data = load_keys()
+    keys = data.get("keys", {})
+    user_keys = data.get("user_keys", {})
 
-    if count >= MAX_KEYS_PER_DAY:
-        return render_template("error.html", message=f"Limit reached: Max {MAX_KEYS_PER_DAY} keys per day."), 429
+    # How many keys has this user created today?
+    user_day_count = user_keys.get(user_ip, {}).get(today, 0)
+
+    if user_day_count >= 3:
+        return jsonify({
+            "error": "Daily key generation limit reached (3 per day)."
+        }), 429
 
     new_key = generate_unique_key(keys)
-    expiration = (datetime.utcnow() + timedelta(hours=24)).isoformat()
+    expiration = (datetime.now() + timedelta(hours=24)).isoformat()
 
     keys[new_key] = {
         "expires": expiration,
         "used": False,
-        "user_ip": user_ip,
-        "created_date": today_str
+        "owner": user_ip
     }
-    save_keys(keys)
+
+    # Update count for this user
+    if user_ip not in user_keys:
+        user_keys[user_ip] = {}
+    user_keys[user_ip][today] = user_day_count + 1
+
+    # Save everything back
+    save_keys({"keys": keys, "user_keys": user_keys})
 
     encrypted_key = cipher.encrypt(new_key.encode()).decode()
     return render_template("keygen.html", key=encrypted_key, expires=expiration)
 
-@app.route("/verify", methods=["GET", "POST"])
+@app.route("/verify")
 def verify_key():
-    print("Request method:", request.method)
-    print("Request args:", request.args)
-    print("Request form:", request.form)
-    print("Request json:", request.get_json(silent=True))
-
-    encrypted_key = None
-
-    if request.method == "POST":
-        encrypted_key = request.form.get("key")
-        if not encrypted_key:
-            json_data = request.get_json(silent=True)
-            if json_data:
-                encrypted_key = json_data.get("key")
-    else:
-        encrypted_key = request.args.get("key")
-
+    encrypted_key = request.args.get("key")
     if not encrypted_key:
         return jsonify({"valid": False, "reason": "No key provided"}), 400
 
@@ -87,7 +76,8 @@ def verify_key():
     except Exception:
         return jsonify({"valid": False, "reason": "Invalid encrypted key"}), 400
 
-    keys = load_keys()
+    data = load_keys()
+    keys = data.get("keys", {})
     key_info = keys.get(key)
 
     if not key_info:
@@ -96,11 +86,12 @@ def verify_key():
     if key_info.get("used"):
         return jsonify({"valid": False, "reason": "Key has already been used"}), 403
 
-    if datetime.fromisoformat(key_info["expires"]) < datetime.utcnow():
+    if datetime.fromisoformat(key_info["expires"]) < datetime.now():
         return jsonify({"valid": False, "reason": "Key expired"}), 403
 
+    # Mark key as used
     keys[key]["used"] = True
-    save_keys(keys)
+    save_keys({"keys": keys, "user_keys": data.get("user_keys", {})})
 
     return jsonify({"valid": True})
 
