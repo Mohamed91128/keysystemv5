@@ -49,10 +49,10 @@ def generate_key():
     new_key = generate_unique_key(keys)
     expiration = (datetime.utcnow() + timedelta(hours=24)).isoformat()
 
-    # Store key info with user IP and creation date
+    # Store key info with user IP, creation date, and initial used_ips list
     keys[new_key] = {
         "expires": expiration,
-        "used": False,
+        "used_ips": [user_ip],  # Initialize with the creator's IP
         "user_ip": user_ip,
         "created_date": today_str
     }
@@ -81,15 +81,24 @@ def verify_key():
     if not key_info:
         return jsonify({"valid": False, "reason": "Key not found"}), 404
 
-    if key_info.get("used"):
-        return jsonify({"valid": False, "reason": "Key has already been used"}), 403
-
+    # Check expiration
     if datetime.fromisoformat(key_info["expires"]) < datetime.utcnow():
         return jsonify({"valid": False, "reason": "Key expired"}), 403
 
-    # Mark key as used
-    keys[key]["used"] = True
-    save_keys(keys)
+    user_ip = request.remote_addr
+
+    # Check if IP has already used the key or if this is the first use
+    used_ips = key_info.get("used_ips", [])
+
+    if used_ips and user_ip not in used_ips:
+        return jsonify({"valid": False, "reason": "Key already used from a different IP"}), 403
+
+    # Add current IP if not already in the list (should usually be creator's IP)
+    if user_ip not in used_ips:
+        used_ips.append(user_ip)
+        key_info["used_ips"] = used_ips
+        keys[key] = key_info
+        save_keys(keys)
 
     return jsonify({"valid": True})
 
