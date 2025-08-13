@@ -8,12 +8,13 @@ function resizeCanvas() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
 }
+
 resizeCanvas();
 window.addEventListener("resize", resizeCanvas);
 
 function initStars() {
   stars = [];
-  for (let i = 0; i < numStars; i) {
+  for (let i = 0; i < numStars; i++) {
     stars.push({
       x: Math.random() * canvas.width,
       y: Math.random() * canvas.height,
@@ -27,7 +28,7 @@ function drawStars() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   ctx.fillStyle = "white";
-  for (let i = 0; i < numStars; i) {
+  for (let i = 0; i < numStars; i++) {
     const star = stars[i];
     star.z -= 2;
 
@@ -38,8 +39,8 @@ function drawStars() {
     }
 
     const k = 128.0 / star.z;
-    const px = star.x * k  canvas.width / 2;
-    const py = star.y * k  canvas.height / 2;
+    const px = star.x * k + canvas.width / 2;
+    const py = star.y * k + canvas.height / 2;
 
     if (px >= 0 && px <= canvas.width && py >= 0 && py <= canvas.height) {
       const size = (1 - star.z / canvas.width) * 2;
