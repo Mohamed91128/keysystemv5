@@ -4,6 +4,7 @@ import uuid
 import json
 import os
 from cryptography.fernet import Fernet
+from urllib.parse import unquote
 
 app = Flask(__name__)
 
@@ -67,6 +68,13 @@ def generate_key():
 @app.route("/verify")
 def verify_key():
     encrypted_key = request.args.get("key")
+
+    if encrypted_key:
+        # Safely decode URL-encoded key (fixes 'No key provided' issues)
+        encrypted_key = unquote(encrypted_key)
+
+    print("DEBUG: Received key param:", encrypted_key)  # Optional debug line
+
     if not encrypted_key:
         return jsonify({"valid": False, "reason": "No key provided"}), 400
 
@@ -93,7 +101,7 @@ def verify_key():
     if used_ips and user_ip not in used_ips:
         return jsonify({"valid": False, "reason": "Key already used from a different IP"}), 403
 
-    # Add current IP if not already in the list (should usually be creator's IP)
+    # Add current IP if not already in the list (rare case)
     if user_ip not in used_ips:
         used_ips.append(user_ip)
         key_info["used_ips"] = used_ips
