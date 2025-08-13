@@ -6,13 +6,10 @@ import os
 from cryptography.fernet import Fernet
 
 app = Flask(__name__)
-app.secret_key = "a_very_secret_key_change_this"  # Needed for Flask sessions
+app.secret_key = "a_very_secret_key_change_this"
 
-# Files
 KEYS_FILE = "keys.json"
 USAGE_FILE = "usage.json"
-
-# Encryption Key
 ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
 cipher = Fernet(ENCRYPTION_KEY)
 
@@ -76,6 +73,8 @@ def generate_key():
     keys[new_key] = {"expires": expiration, "used": False}
     save_keys(keys)
 
+    print(f"[GENKEY] Generated raw key: {new_key}")
+
     if user_data and user_data.get("date") == today_str:
         usage[user_id]["count"] += 1
     else:
@@ -83,6 +82,8 @@ def generate_key():
     save_usage(usage)
 
     encrypted_key = cipher.encrypt(new_key.encode()).decode()
+    print(f"[GENKEY] Encrypted key: {encrypted_key}")
+
     return render_template("keygen.html", key=encrypted_key, expires=expiration)
 
 @app.route("/verify")
@@ -94,13 +95,18 @@ def verify_key():
     try:
         encrypted_key = encrypted_key.replace(" ", "+")
         key = cipher.decrypt(encrypted_key.encode()).decode()
+        print(f"[VERIFY] Decrypted key: {key}")
     except Exception as e:
-        return jsonify({"valid": False, "reason": f"Invalid encrypted key: {str(e)}"}), 400
+        print(f"[VERIFY] Failed to decrypt key: {e}")
+        return jsonify({"valid": False, "reason": "Invalid encrypted key"}), 400
 
     keys = load_keys()
+    print(f"[VERIFY] Existing keys: {list(keys.keys())}")
+
     key_info = keys.get(key)
 
     if not key_info:
+        print(f"[VERIFY] Key '{key}' not found in saved keys.")
         return jsonify({"valid": False, "reason": "Key not found"}), 404
 
     if key_info.get("used"):
@@ -113,6 +119,13 @@ def verify_key():
     save_keys(keys)
 
     return jsonify({"valid": True})
+
+# ---------------- Debugging Route (REMOVE IN PROD) ---------------- #
+
+@app.route("/debug/keys")
+def debug_keys():
+    keys = load_keys()
+    return jsonify(keys)
 
 # ---------------- Run Server ---------------- #
 
